@@ -4,16 +4,36 @@ import pandas as pd
 import glob
 import argparse
 import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
+
+def df_to_markdown(df):
+    headers = [str(c) for c in df.columns]
+    has_index = True
+    if has_index:
+        headers = [str(df.index.name or "")] + headers
+        rows = [[str(idx)] + [str(v) for v in row] for idx, row in df.iterrows()]
+    else:
+        rows = [[str(v) for v in row] for _, row in df.iterrows()]
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(cell))
+    header_str = "| " + " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers)) + " |"
+    sep_str = "| " + " | ".join("-" * col_widths[i] for i in range(len(headers))) + " |"
+    row_strs = ["| " + " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row)) + " |" for row in rows]
+    return "\n".join([header_str, sep_str] + row_strs)
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Evaluation Report")
     parser.add_argument("--res_dir", type=str, default="results/celiac_agent", help="Directory containing JSON results")
     parser.add_argument("--out_file", type=str, default="results/evaluation_report.md", help="Path to output markdown report")
+    parser.add_argument("--gt_path", type=str, default="/home/biand/Projects/Celiac_BioVU/data/Celiac Diagnosis by Manual Review.xlsx", help="Path to ground truth Excel file")
     args = parser.parse_args()
 
-    gt_path = "data/Celiac Diagnosis by Manual Review.xlsx"
+    gt_path = args.gt_path
+    if not os.path.exists(gt_path):
+        if os.path.exists("data/Celiac Diagnosis by Manual Review.xlsx"):
+            gt_path = "data/Celiac Diagnosis by Manual Review.xlsx"
     import openpyxl
     wb = openpyxl.load_workbook(gt_path, data_only=True)
     sheet = wb.active
@@ -89,17 +109,27 @@ def main():
     cm_df = cm_df.reindex(index=gt_labels, columns=agent_labels, fill_value=0)
     
     md_content += "## Confusion Matrix (All Categories)\n\n"
-    md_content += cm_df.to_markdown() + "\n\n"
+    md_content += df_to_markdown(cm_df) + "\n\n"
     
     # Generate Positive/Negative Only confusion matrix
     cm_plot_df = cm_df.loc[["Positive", "Negative"], ["Positive", "Negative"]]
     md_content += "## Confusion Matrix (Positive/Negative Only)\n\n"
-    md_content += cm_plot_df.to_markdown() + "\n\n"
+    md_content += df_to_markdown(cm_plot_df) + "\n\n"
     
     # Generate and save confusion matrix plot (keeping only Positive and Negative labels)
     plt.figure(figsize=(6, 5))
-    sns.heatmap(cm_plot_df, annot=True, fmt='d', cmap='Blues', annot_kws={"size": 14})
+    im = plt.imshow(cm_plot_df.values, cmap='Blues', interpolation='nearest')
     plt.title('Confusion Matrix', fontsize=16)
+    plt.colorbar(im)
+    tick_marks = range(len(cm_plot_df.columns))
+    plt.xticks(tick_marks, cm_plot_df.columns, fontsize=12)
+    plt.yticks(tick_marks, cm_plot_df.index, fontsize=12)
+    for i in range(len(cm_plot_df.index)):
+        for j in range(len(cm_plot_df.columns)):
+            val = cm_plot_df.values[i, j]
+            max_val = cm_plot_df.values.max()
+            color = "white" if max_val > 0 and val > max_val / 2 else "black"
+            plt.text(j, i, str(val), ha="center", va="center", color=color, fontsize=14)
     plt.ylabel('Ground Truth Label', fontsize=12)
     plt.xlabel('Agent Label', fontsize=12)
     plt.tight_layout()
@@ -112,7 +142,7 @@ def main():
     report = classification_report(df_eval["GT_Label"], df_eval["Agent_Label"], labels=["Positive", "Negative", "Indeterminate"], zero_division=0, output_dict=True)
     report_df = pd.DataFrame(report).transpose()
     md_content += "### Classification Report\n\n"
-    md_content += report_df.to_markdown() + "\n\n"
+    md_content += df_to_markdown(report_df) + "\n\n"
     
     md_content += "## Error Analysis\n\n"
     

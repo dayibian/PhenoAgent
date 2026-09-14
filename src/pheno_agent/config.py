@@ -47,7 +47,7 @@ class ModelConfig:
     """Ollama model assignments for each agent role."""
 
     # Strong reasoning — used by Critic and Adjudicator
-    reasoning_model: str = "qwen3.6:27b"
+    reasoning_model: str = "qwen3.8:27b"
 
     # Structured extraction — used by Signal Extractor
     extraction_model: str = "qwen3.6:35b-a3b"

@@ -141,3 +141,9 @@ cython_debug/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# Data and results folders
+/data/*
+!/data/.gitkeep
+/results/*
+!/results/.gitkeep
