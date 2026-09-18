@@ -3,7 +3,7 @@ orchestrator.py — Central host that coordinates the agent workflow.
 
 For each patient:
   1. DataGatherer → compile dossier
-  2. Check TTG override → short-circuit if lab_decision == "case"
+  2. Check lab override → (bypassed if use_labs is False)
   3. SignalExtractor → extract per-note signals
   4. Critic → verify signals (reflection loop up to max_reflection_loops)
   5. Adjudicator → apply decision table + generate reasoning
@@ -111,31 +111,27 @@ class Orchestrator:
                 trace, t0,
             )
 
-        # ---- Step 2: TTG Override Check -----------------------------------
-        lab_decision = dossier.lab_summary.lab_decision if dossier.lab_summary else "excluded"
-
-        if lab_decision == "case":
-            logger.info("PATIENT %s — TTG override: lab_decision='case'. → Positive", grid)
-            diagnosis = FinalDiagnosis(
-                grid=grid,
-                diagnosis="Positive",
-                confidence=1.0,
-                decision_path="TTG-IgA lab override (TTG > cutoff)",
-                reasoning=(
-                    f"TTG-IgA lab decision is 'case' (TTG > cutoff). "
-                    f"Per clinician's rules: 'If TTG > 100 or > 10x upper limit of normal, "
-                    f"then positive regardless of other labs or notes.'"
-                ),
-                lab_decision=lab_decision,
-            )
-            if dossier.lab_summary:
-                diagnosis.evidence = [dossier.lab_summary.summary_text]
-            trace["steps"].append({
-                "agent": "TTG_Override",
-                "lab_decision": lab_decision,
-                "result": "Positive",
-            })
-            return self._build_result(diagnosis, trace, t0)
+        # ---- Step 2: Lab Override Check (if applicable) -------------------
+        if cfg.use_labs:
+            lab_decision = dossier.lab_summary.lab_decision if dossier.lab_summary else "excluded"
+            if lab_decision == "case":
+                logger.info("PATIENT %s — Lab override: lab_decision='case'. → Positive", grid)
+                diagnosis = FinalDiagnosis(
+                    grid=grid,
+                    diagnosis="Positive",
+                    confidence=1.0,
+                    decision_path="Serological lab override",
+                    reasoning="Serological lab decision indicates confirmed case.",
+                    lab_decision=lab_decision,
+                )
+                if dossier.lab_summary:
+                    diagnosis.evidence = [dossier.lab_summary.summary_text]
+                trace["steps"].append({
+                    "agent": "Lab_Override",
+                    "lab_decision": lab_decision,
+                    "result": "Positive",
+                })
+                return self._build_result(diagnosis, trace, t0)
 
         # ---- Step 3: Signal Extraction ------------------------------------
         logger.info("PATIENT %s — Step 3: Signal Extraction", grid)
@@ -263,11 +259,12 @@ class Orchestrator:
             "note_label": sig.note_label,
             "note_date": sig.note_date,
             "note_type": sig.note_type,
-            "iel_status": sig.iel_status,
-            "villous_architecture": sig.villous_architecture,
-            "marsh_grade": sig.marsh_grade,
-            "external_confirmation": sig.external_confirmation,
-            "past_celiac_diagnosis": sig.past_celiac_diagnosis,
+            "stuttering_mentioned": sig.stuttering_mentioned,
+            "speech_context": sig.speech_context,
+            "subject_attribution": sig.subject_attribution,
+            "assertion": sig.assertion,
+            "slp_or_formal_assessment": sig.slp_or_formal_assessment,
+            "competing_condition": sig.competing_condition,
             "supporting_quotes": sig.supporting_quotes,
         }
 

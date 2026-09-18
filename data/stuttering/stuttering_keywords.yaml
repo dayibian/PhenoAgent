@@ -1,0 +1,264 @@
+# Stuttering Phenotyping Keywords and Phrases
+# Derived from Pruett et al. (2021), Shaw et al. (2021), and clinical EHR phenotyping guidelines.
+
+primary_keywords:
+  - stutter
+  - stuttering
+  - stuttered
+  - stutters
+  - stammer
+  - stammering
+  - stammered
+  - stammers
+  - studder
+  - studdering
+  - studdered
+  - studders
+  - disfluency
+  - disfluencies
+  - disfluent
+  - dysfluency
+  - dysfluencies
+  - dysfluent
+
+confirmatory_keywords:
+  # Enriched within 10 words of primary keywords in confirmed developmental stuttering cases (Pruett et al., Shaw et al.)
+  - mom
+  - mother
+  - mom's
+  - parent
+  - parents
+  - school
+  - preschool
+  - pre-school
+  - child
+  - children
+  - birth
+  - dad
+  - father
+  - dad's
+  - father's
+  - ssi-3
+  - ssi
+
+diagnostic_tests_and_assessments:
+  - ssi
+  - ssi-3
+  - ssi-4
+  - stuttering severity instrument
+  - stuttering severity instrument-3
+  - stuttering severity instrument-4
+  - oases
+  - overall assessment of the speaker's experience of stuttering
+  - percent syllables stuttered
+  - percentage of syllables stuttered
+  - "%ss"
+  - fluency assessment
+  - fluency evaluation
+  - stuttering assessment
+  - stuttering evaluation
+  - formal fluency evaluation
+
+slp_clinical_context:
+  - speech-language pathologist
+  - speech language pathologist
+  - speech-language pathology
+  - speech language pathology
+  - speech therapist
+  - speech therapy
+  - speech pathology
+  - slp
+  - ccc-slp
+  - speech consult
+  - speech consultation
+  - speech evaluation
+  - speech referral
+  - referral to speech therapy
+  - referred to speech therapy
+  - speech services
+  - speech-language clinic
+
+speech_context_indicators:
+  - speech
+  - voice
+  - fluency
+  - disfluent speech
+  - stuttered speech
+  - talking
+  - spoken
+  - verbal
+  - conversation
+  - expressive language
+  - sound prolongations
+  - part-word repetitions
+  - whole-word repetitions
+  - syllable repetitions
+  - speech blocks
+  - blocking on words
+  - articulatory blocks
+  - struggle behaviors
+  - secondary behaviors
+  - avoidance behaviors
+
+negation_phrases:
+  - no stuttering
+  - denies stuttering
+  - denied stuttering
+  - without stuttering
+  - negative for stuttering
+  - not stuttering
+  - does not stutter
+  - no stutter
+  - denies stutter
+  - no history of stuttering
+  - no stammering
+  - denies stammering
+  - denied stammering
+  - without stammering
+  - negative for stammering
+  - does not stammer
+  - no stammer
+  - no speech disfluency
+  - no disfluency
+  - denies speech disfluency
+  - denies disfluency
+  - no dysfluency
+  - denies dysfluency
+  - speech is fluent without stutter
+  - speech fluent without stutter
+  - fluent speech without stuttering
+  - normal speech fluency
+  - fluent without disfluencies
+  - no evidence of stuttering
+  - speech without disfluency
+  - no disfluencies noted
+  - speech fluent and articulate
+  - speech is clear and fluent
+
+family_history_phrases:
+  - family history of stuttering
+  - family history of stutter
+  - fh of stuttering
+  - fhx of stuttering
+  - fhx stuttering
+  - positive family history of stuttering
+  - positive family history for stuttering
+  - positive fh of stuttering
+  - positive fhx of stuttering
+  - family history positive for stuttering
+  - family history notable for stuttering
+  - father stutters
+  - father had a stutter
+  - father has a stutter
+  - dad stutters
+  - dad had a stutter
+  - dad has a stutter
+  - mother stutters
+  - mother had a stutter
+  - mother has a stutter
+  - mom stutters
+  - mom had a stutter
+  - mom has a stutter
+  - brother stutters
+  - brother had a stutter
+  - brother has a stutter
+  - sister stutters
+  - sister had a stutter
+  - sister has a stutter
+  - sibling stutters
+  - sibling had a stutter
+  - cousin stutters
+  - uncle stutters
+  - aunt stutters
+  - grandfather stutters
+  - paternal stuttering
+  - maternal stuttering
+  - history of stuttering on father's side
+  - history of stuttering on mother's side
+  - family member stutters
+  - relative stutters
+
+non_speech_exclusions:
+  - stuttering gait
+  - stuttered gait
+  - stuttering walk
+  - stuttering steps
+  - stuttering priapism
+  - stuttering priapisms
+  - stuttering angina
+  - stuttering chest pain
+  - stuttering ischemia
+  - stuttering ischemic
+  - stuttering myocardial ischemia
+  - stuttering infarction
+  - stuttering infarct
+  - stuttering stroke
+  - stuttering tia
+  - stuttering transient ischemic attack
+  - stuttering course
+  - stuttering onset
+  - stuttering pattern
+  - stuttering progression
+  - stuttering symptoms
+  - stuttering presentation
+  - stuttering disease course
+
+competing_conditions:
+  - schizophrenia
+  - schizophreniform
+  - schizoaffective
+  - psychosis
+  - psychotic disorder
+  - acute psychosis
+  - formal thought disorder
+  - thought disorder
+  - loose associations
+  - flight of ideas
+  - clanging
+  - clang associations
+  - pressured speech
+  - poverty of speech
+  - halting speech in psychosis
+  - palilalia
+  - echolalia
+  - coprolalia
+  - apraxia of speech
+  - acquired aphasia
+  - expressive aphasia
+  - wernicke's aphasia
+  - broca's aphasia
+  - acquired neurogenic stuttering
+  - post-stroke speech difficulty
+  - tbi-induced speech disorder
+
+popular_words:
+  - stutter
+  - stuttering
+  - stuttered
+  - stutters
+  - stammer
+  - stammering
+  - stammered
+  - studder
+  - studdering
+  - studdered
+  - disfluency
+  - disfluencies
+  - disfluent
+  - dysfluency
+  - dysfluencies
+  - dysfluent
+  - ssi
+  - ssi-3
+  - ssi-4
+  - oases
+  - slp
+  - speech
+  - fluency
+  - prolongations
+  - repetitions
+  - blocks
+  - therapist
+  - pathology
+  - preschool
+  - pediatric

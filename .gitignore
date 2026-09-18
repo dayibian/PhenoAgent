@@ -143,7 +143,12 @@ cython_debug/
 Thumbs.db
 
 # Data and results folders
-/data/*
-!/data/.gitkeep
+/data/**
+!/data/**/
+!/data/**/.gitkeep
+!/data/**/*.yaml
+!/data/**/*.yml
+!/data/**/*.md
+**/ehr_markdown_dataset/**
 /results/*
 !/results/.gitkeep

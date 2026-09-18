@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from pheno_agent.config import cfg
 from pheno_agent.tools.ehr_reader import (
     NoteEntry,
     ParsedEHR,
@@ -98,19 +99,45 @@ class DataGatherer:
         """
         dossier = PatientDossier(grid=grid)
 
-        # Step 1: Read EHR markdown
+        # Step 1: Read EHR markdown or fallback to ChromaDB chunks
         logger.info("[DataGatherer] Reading EHR for %s …", grid)
         raw_md = read_patient_ehr(grid)
-        if raw_md is None:
-            logger.warning("[DataGatherer] No EHR file found for %s.", grid)
+
+        if raw_md is not None:
+            dossier.full_ehr_markdown = raw_md
+            dossier.parsed_ehr = parse_ehr_sections(raw_md)
+        else:
+            # Fallback to ChromaDB stored chunks if EHR markdown files are not present
+            logger.info("[DataGatherer] No markdown file found for %s. Checking ChromaDB store...", grid)
+            try:
+                from pheno_agent.tools.chroma_retriever import get_all_patient_chunks_from_chroma
+                chroma_chunks = get_all_patient_chunks_from_chroma(grid)
+                if chroma_chunks:
+                    notes = [
+                        NoteEntry(
+                            date=c.note_datetime,
+                            title=c.note_type or "Clinical Note",
+                            source="ChromaDB Vector Store",
+                            text=c.text,
+                        )
+                        for c in chroma_chunks
+                    ]
+                    dossier.parsed_ehr = ParsedEHR(grid=grid, notes=notes)
+                    dossier.full_ehr_markdown = "\n\n".join(c.text for c in chroma_chunks)
+                    logger.info("[DataGatherer] Reconstructed %d notes from ChromaDB chunks for %s.", len(notes), grid)
+            except Exception as e:
+                logger.debug("[DataGatherer] ChromaDB fallback failed: %s", e)
+
+        if not dossier.parsed_ehr or not dossier.parsed_ehr.notes:
+            logger.warning("[DataGatherer] No EHR notes found for %s.", grid)
             return dossier
 
-        dossier.full_ehr_markdown = raw_md
-        dossier.parsed_ehr = parse_ehr_sections(raw_md)
-
-        # Step 2: Look up TTG-IgA labs
-        logger.info("[DataGatherer] Looking up TTG labs for %s …", grid)
-        dossier.lab_summary = lookup_ttg_labs(grid)
+        # Step 2: Lab analysis (only if enabled for phenotype)
+        if cfg.use_labs:
+            logger.info("[DataGatherer] Looking up labs for %s …", grid)
+            dossier.lab_summary = lookup_ttg_labs(grid)
+        else:
+            dossier.lab_summary = None
 
         # Step 3: Keyword scan on each note
         logger.info("[DataGatherer] Running keyword scan for %s …", grid)
@@ -118,9 +145,6 @@ class DataGatherer:
         dossier.keyword_report = scan_patient_notes(note_texts, grid=grid)
 
         # Step 4: Select relevant notes for LLM processing
-        # Strategy: include ALL notes that have any keyword signal,
-        # plus any notes with celiac-related content.
-        # If no notes have signals, include all notes (let LLM decide).
         dossier.relevant_notes = self._select_relevant_notes(dossier)
 
         logger.info("[DataGatherer] Dossier complete:\n%s", dossier.summary())
@@ -131,8 +155,8 @@ class DataGatherer:
         Select which notes should be sent to the Signal Extractor.
 
         Priority:
-        1. Notes with keyword hits (Positive or Indeterminate signals)
-        2. Notes containing any celiac-related popular keywords
+        1. Notes with keyword hits (primary, SLP, formal assessment, confirmatory context)
+        2. Notes containing any stuttering-related keywords
         3. If nothing found, include all notes
         """
         if not dossier.parsed_ehr or not dossier.keyword_report:
@@ -146,9 +170,10 @@ class DataGatherer:
         non_signalled = []
         for i, (note, sig) in enumerate(zip(notes, kw_signals)):
             has_signal = any([
-                sig.outside_biopsy, sig.marsh_positive, sig.marsh_indeterminate,
-                sig.iel_positive, sig.iel_negative,
-                sig.villous_abnormal, sig.villous_normal,
+                getattr(sig, "has_primary", False),
+                getattr(sig, "has_slp_or_formal", False),
+                getattr(sig, "has_confirmatory", False),
+                getattr(sig, "has_speech_context", False),
             ])
             if has_signal:
                 signalled.append(note)
@@ -156,15 +181,17 @@ class DataGatherer:
                 non_signalled.append(note)
 
         if signalled:
-            # Also include notes that mention celiac/sprue/gluten in any form
-            celiac_keywords = ["celiac", "coeliac", "sprue", "gluten", "ttg", "marsh"]
+            stuttering_keywords = [
+                "stutter", "stammer", "studder", "disfluen", "dysfluen",
+                "ssi", "oases", "slp", "speech", "fluency",
+            ]
             extra = [
                 n for n in non_signalled
-                if any(kw in n.text.lower() for kw in celiac_keywords)
+                if any(kw in n.text.lower() for kw in stuttering_keywords)
             ]
             selected = signalled + extra
             logger.debug(
-                "Selected %d signalled + %d celiac-mentioned notes (of %d total).",
+                "Selected %d signalled + %d stuttering-mentioned notes (of %d total).",
                 len(signalled), len(extra), len(notes),
             )
             return selected

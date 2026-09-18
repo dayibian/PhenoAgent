@@ -1,10 +1,10 @@
 """
-signal_extractor.py — Signal Extractor Agent.
+signal_extractor.py — Signal Extractor Agent for Stuttering.
 
-Uses an LLM to extract structured pathological signals from each medical
-note.  The clinician's diagnosis logic (phrase dictionaries, Marsh grading,
-external confirmation rules) is injected into every prompt so the LLM
-knows exactly what to look for.
+Uses an LLM to extract structured speech disfluency and stuttering signals
+from each medical note. The clinical phenotyping rules (stuttering_rules.md)
+are injected into every prompt so the LLM extracts standardized categories
+(speech context, patient attribution, assertion, SLP/eval, exclusions).
 
 Supports a **reflection mode**: when the Critic returns feedback, the
 Extractor re-processes only the flagged notes with the feedback included.
@@ -19,19 +19,39 @@ from pydantic import BaseModel, Field
 from pheno_agent.config import cfg
 from pheno_agent.llm import OllamaHandler, parse_json_response
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic Schemas for Structured LLM Output
+# ---------------------------------------------------------------------------
+
 class NoteSignalSchema(BaseModel):
-    note_label: str
-    iel_status: Literal["positive", "negative", "not_found"]
-    villous_architecture: Literal["abnormal", "normal", "not_found"]
-    marsh_grade: Literal["positive", "indeterminate", "not_found"]
-    external_confirmation: bool
-    past_celiac_diagnosis: bool
-    supporting_quotes: List[str]
+    note_label: str = Field(description="The label of the note, e.g. Note_1")
+    stuttering_mentioned: bool = Field(description="Is stuttering, stammering, or speech disfluency mentioned in the note?")
+    speech_context: Literal["speech", "non_speech", "not_found"] = Field(
+        description="'speech' if describing spoken communication, 'non_speech' if describing non-speech jargon (gait, angina, priapism, stroke), or 'not_found'"
+    )
+    subject_attribution: Literal["patient", "family_only", "unknown"] = Field(
+        description="'patient' if describing the patient, 'family_only' if restricted to family history/relatives, or 'unknown'"
+    )
+    assertion: Literal["affirmative", "negated", "ruled_out", "ambiguous", "not_found"] = Field(
+        description="Clinical assertion: affirmative symptoms, explicitly negated, formally ruled out, ambiguous/query, or not_found"
+    )
+    slp_or_formal_assessment: bool = Field(
+        description="True if there is confirmed clinical diagnosis by physician/SLP, formal speech therapy / SLP encounter / referral, or standardized test (SSI, OASES, %SS)"
+    )
+    competing_condition: bool = Field(
+        description="True if speech irregularity is described solely within the context of active psychosis, schizophrenia, or clanging"
+    )
+    supporting_quotes: List[str] = Field(
+        default_factory=list,
+        description="Exact verbatim phrases from the note text supporting the extracted signals"
+    )
+
 
 class NoteSignalsResponseSchema(BaseModel):
     notes: List[NoteSignalSchema]
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -40,15 +60,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class NoteSignals:
-    """Extracted celiac signals for a single note."""
+    """Extracted stuttering signals for a single note."""
     note_label: str = ""
     note_date: str = ""
     note_type: str = ""
-    iel_status: str = "not_found"        # positive / negative / not_found
-    villous_architecture: str = "not_found"  # abnormal / normal / not_found
-    marsh_grade: str = "not_found"       # positive / indeterminate / not_found
-    external_confirmation: bool = False
-    past_celiac_diagnosis: bool = False
+    stuttering_mentioned: bool = False
+    speech_context: str = "not_found"          # speech / non_speech / not_found
+    subject_attribution: str = "unknown"       # patient / family_only / unknown
+    assertion: str = "not_found"               # affirmative / negated / ruled_out / ambiguous / not_found
+    slp_or_formal_assessment: bool = False
+    competing_condition: bool = False
     supporting_quotes: List[str] = field(default_factory=list)
 
 
@@ -56,7 +77,7 @@ class NoteSignals:
 class CriticFeedback:
     """Feedback from the Critic agent for re-extraction."""
     note_label: str
-    issue_type: str  # phantom_quote / signal_mismatch / negation_error / false_diagnosis
+    issue_type: str  # phantom_quote / attribution_error / non_speech_mismatch / negation_error
     description: str
 
 
@@ -68,14 +89,17 @@ _diagnosis_logic: Optional[str] = None
 
 
 def _load_diagnosis_logic(path: Optional[Path] = None) -> str:
-    """Load the clinician's diagnosis logic markdown (cached)."""
+    """Load the clinical phenotyping rules markdown (cached)."""
     global _diagnosis_logic
     if _diagnosis_logic is not None:
         return _diagnosis_logic
 
-    if path is None:
-        path = cfg.diagnosis_logic_path
-    with open(path, "r") as f:
+    path = path or cfg.diagnosis_logic_path
+    if not path.exists():
+        logger.warning("Diagnosis rules file %s not found. Using empty text.", path)
+        return ""
+
+    with open(path, "r", encoding="utf-8") as f:
         _diagnosis_logic = f.read()
     return _diagnosis_logic
 
@@ -90,18 +114,8 @@ def _build_extraction_prompt(
     critic_feedback: Optional[List[CriticFeedback]] = None,
 ) -> str:
     """
-    Build the signal extraction prompt.
-
-    Includes the full clinician's diagnosis logic as a reference guide.
-
-    Parameters
-    ----------
-    notes_batch : list
-        List of dicts with keys: label, date, source, text.
-    keyword_hints : str
-        Optional keyword pre-screen summary to guide attention.
-    critic_feedback : list[CriticFeedback], optional
-        If provided, adds re-extraction instructions for flagged notes.
+    Build the signal extraction prompt for stuttering phenotyping.
+    Includes the clinical phenotyping rules as in-context guidance.
     """
     diagnosis_logic = _load_diagnosis_logic()
 
@@ -141,9 +155,9 @@ re-examine the flagged notes and correct any errors:
 {chr(10).join(fb_lines)}
 """
 
-    prompt = f"""You are a clinical data extraction assistant specialising in celiac disease pathology.
+    prompt = f"""You are a clinical data extraction assistant specialising in speech disfluency and developmental stuttering phenotyping.
 
-## Reference: Clinician's Diagnosis Logic
+## Reference: Clinical Phenotyping Rules for Stuttering
 
 {diagnosis_logic}
 
@@ -155,18 +169,20 @@ re-examine the flagged notes and correct any errors:
 
 ## Task
 
-For EACH note above, extract the pathological signals. Do NOT determine a diagnosis — only extract signals.
+For EACH note above, extract the clinical stuttering signals strictly following the clinical phenotyping rules above.
+Do NOT determine the final overall diagnosis — only extract the objective signals for each note.
 
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON matching this schema:
 {{
   "notes": [
     {{
       "note_label": "Note_1",
-      "iel_status": "positive" | "negative" | "not_found",
-      "villous_architecture": "abnormal" | "normal" | "not_found",
-      "marsh_grade": "positive" | "indeterminate" | "not_found",
-      "external_confirmation": true | false,
-      "past_celiac_diagnosis": true | false,
+      "stuttering_mentioned": true | false,
+      "speech_context": "speech" | "non_speech" | "not_found",
+      "subject_attribution": "patient" | "family_only" | "unknown",
+      "assertion": "affirmative" | "negated" | "ruled_out" | "ambiguous" | "not_found",
+      "slp_or_formal_assessment": true | false,
+      "competing_condition": true | false,
       "supporting_quotes": ["<exact phrase from note>"]
     }}
   ]
@@ -174,13 +190,17 @@ Respond ONLY with valid JSON:
 
 Rules:
 - Report signals for EACH note separately.
-- Use "not_found" if a signal category is absent from the note.
-- Prefer the final diagnostic impression over preliminary descriptions.
-- If both positive and negative IEL phrases appear, prefer the statement from the final diagnosis section.
-- A clearly negated phrase (e.g. "no increased intraepithelial lymphocytes") means NEGATIVE.
-- Set past_celiac_diagnosis to true if the note mentions a prior or established celiac diagnosis (problem list, PMH, assessment, etc.).
-- Do NOT set past_celiac_diagnosis to true for "rule out celiac" or "family history of celiac" — those are NOT confirmed diagnoses.
-- For supporting_quotes, copy EXACT phrases from the note text. Do not paraphrase.
+- speech_context: Use "speech" if describing spoken language/fluency. Use "non_speech" if describing non-speech medical jargon (stuttering gait, stuttering angina, stuttering priapism, stuttering stroke).
+- subject_attribution: Use "patient" if describing the patient. Use "family_only" if the mention appears ONLY in family history or refers only to relatives (e.g. "father stutters", "positive family history of stuttering").
+- assertion:
+  * "affirmative": Clear clinical mention that the patient stutters, has speech disfluency, or is undergoing speech therapy.
+  * "negated": Explicit negation (e.g. "denies stuttering", "no stuttering", "speech is fluent without stutter", "normal speech fluency").
+  * "ruled_out": Formal evaluation determined typical development and explicitly ruled out stuttering.
+  * "ambiguous": Unconfirmed query, parental question without clinical evaluation, or uncertain context.
+  * "not_found": No stuttering or disfluency mentioned.
+- slp_or_formal_assessment: Set to true if there is an explicit diagnosis by physician/SLP, formal speech therapy / SLP referral / encounter, or standardized test score (SSI, SSI-3, SSI-4, OASES, %SS).
+- competing_condition: Set to true if speech difficulty is described solely in the context of active psychosis, schizophrenia, or clanging.
+- For supporting_quotes, copy EXACT verbatim phrases from the note text. Do not paraphrase.
 - Do not include text outside the JSON."""
 
     return prompt
@@ -192,10 +212,7 @@ Rules:
 
 class SignalExtractor:
     """
-    LLM-based agent that extracts structured celiac signals from notes.
-
-    Uses the clinician's phrase dictionaries and diagnosis logic as
-    in-context reference to guide extraction.
+    LLM-based agent that extracts structured stuttering signals from notes.
     """
 
     def __init__(self, llm: OllamaHandler):
@@ -210,20 +227,6 @@ class SignalExtractor:
     ) -> List[NoteSignals]:
         """
         Extract signals from a list of notes.
-
-        Parameters
-        ----------
-        notes : list
-            List of NoteEntry objects (from DataGatherer).
-        keyword_hints : str
-            Keyword pre-screen summary text.
-        critic_feedback : list[CriticFeedback], optional
-            Feedback from Critic for re-extraction.
-
-        Returns
-        -------
-        list[NoteSignals]
-            Extracted signals for each note.
         """
         if not notes:
             return []
@@ -261,7 +264,7 @@ class SignalExtractor:
 
             system_prompt = (
                 "You are a clinical data extraction assistant. "
-                "Extract structured celiac disease signals from medical notes. "
+                "Extract structured speech disfluency and stuttering signals from medical notes. "
                 "Respond only in valid JSON format."
             )
 
@@ -270,11 +273,32 @@ class SignalExtractor:
                 batch_start + 1, batch_start + len(batch), len(note_dicts),
             )
 
-            parsed_response = self.llm.get_structured(
-                system_prompt, prompt, NoteSignalsResponseSchema, model=self.model,
-            )
+            try:
+                parsed_response = self.llm.get_structured(
+                    system_prompt, prompt, NoteSignalsResponseSchema, model=self.model,
+                )
+                signals = self._process_extracted_signals(parsed_response, batch)
+            except Exception as e:
+                logger.warning("[SignalExtractor] Structured extraction failed (%s). Attempting raw JSON fallback...", e)
+                raw_response = self.llm.generate(system_prompt, prompt, model=self.model)
+                parsed_dict = parse_json_response(raw_response)
+                notes_data = parsed_dict.get("notes", []) if isinstance(parsed_dict, dict) else []
+                signals = []
+                for i, nd in enumerate(notes_data):
+                    matching_dict = batch[i] if i < len(batch) else {}
+                    signals.append(NoteSignals(
+                        note_label=nd.get("note_label", f"Note_{i+1}"),
+                        note_date=matching_dict.get("date", ""),
+                        note_type=matching_dict.get("source", ""),
+                        stuttering_mentioned=bool(nd.get("stuttering_mentioned", False)),
+                        speech_context=str(nd.get("speech_context", "not_found")),
+                        subject_attribution=str(nd.get("subject_attribution", "unknown")),
+                        assertion=str(nd.get("assertion", "not_found")),
+                        slp_or_formal_assessment=bool(nd.get("slp_or_formal_assessment", False)),
+                        competing_condition=bool(nd.get("competing_condition", False)),
+                        supporting_quotes=nd.get("supporting_quotes", []),
+                    ))
 
-            signals = self._process_extracted_signals(parsed_response, batch)
             all_signals.extend(signals)
 
         return all_signals
@@ -286,7 +310,6 @@ class SignalExtractor:
         signals = []
         for nd in parsed_response.notes:
             label = nd.note_label
-            # Match back to note_dicts for date/type
             matching_dict = next(
                 (d for d in note_dicts if d["label"] == label), {}
             )
@@ -295,11 +318,12 @@ class SignalExtractor:
                 note_label=label,
                 note_date=matching_dict.get("date", ""),
                 note_type=matching_dict.get("source", ""),
-                iel_status=nd.iel_status,
-                villous_architecture=nd.villous_architecture,
-                marsh_grade=nd.marsh_grade,
-                external_confirmation=nd.external_confirmation,
-                past_celiac_diagnosis=nd.past_celiac_diagnosis,
+                stuttering_mentioned=nd.stuttering_mentioned,
+                speech_context=nd.speech_context,
+                subject_attribution=nd.subject_attribution,
+                assertion=nd.assertion,
+                slp_or_formal_assessment=nd.slp_or_formal_assessment,
+                competing_condition=nd.competing_condition,
                 supporting_quotes=nd.supporting_quotes or [],
             )
             signals.append(sig)

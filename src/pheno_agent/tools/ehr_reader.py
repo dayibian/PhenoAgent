@@ -154,6 +154,34 @@ def parse_ehr_sections(markdown: str) -> ParsedEHR:
 
 
 def get_available_grids(ehr_dir: Optional[Path] = None) -> List[str]:
-    """Return a sorted list of all patient grid IDs with EHR files."""
+    """
+    Return a sorted list of all patient grid IDs with EHR files.
+    If the markdown directory is empty or not present (e.g. ignored),
+    falls back to checking ChromaDB or rag_chunks.csv.
+    """
     ehr_dir = ehr_dir or cfg.ehr_markdown_dir
-    return sorted(p.stem for p in ehr_dir.glob("*.md"))
+    if ehr_dir.exists():
+        grids = sorted(p.stem for p in ehr_dir.glob("*.md"))
+        if grids:
+            return grids
+
+    # Fallback 1: ChromaDB
+    try:
+        from pheno_agent.tools.chroma_retriever import get_available_grids_from_chroma
+        chroma_grids = get_available_grids_from_chroma()
+        if chroma_grids:
+            return chroma_grids
+    except Exception:
+        pass
+
+    # Fallback 2: Chunks CSV
+    chunks_path = cfg.data_dir / "rag_chunks.csv"
+    if chunks_path.exists():
+        try:
+            import pandas as pd
+            df = pd.read_csv(chunks_path, usecols=["grid"])
+            return sorted(df["grid"].dropna().astype(str).unique().tolist())
+        except Exception:
+            pass
+
+    return []

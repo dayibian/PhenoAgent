@@ -13,30 +13,34 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Path constants (relative to project root)
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path("/home/biand/Projects/Celiac_BioVU")
-DATA_DIR = PROJECT_ROOT / "data"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = PROJECT_ROOT / "data" / "stuttering"
 RESULTS_DIR = Path("results")
+
+# Phenotype
+PHENOTYPE = "stuttering"
+USE_LABS = False  # Lab values are not needed for stuttering
 
 # Input data
 EHR_MARKDOWN_DIR = DATA_DIR / "ehr_markdown_dataset"
-LAB_CSV_PATH = DATA_DIR / "all-ttg-labs.csv.gz"
-KEYWORDS_PATH = DATA_DIR / "celiac_keywords_latest.yaml"
-DIAGNOSIS_LOGIC_PATH = DATA_DIR / "diagnosis_logic_from_clinician.md"
-GROUND_TRUTH_PATH = DATA_DIR / "Celiac Diagnosis by Manual Review.xlsx"
+LAB_CSV_PATH = None
+KEYWORDS_PATH = DATA_DIR / "stuttering_keywords.yaml"
+DIAGNOSIS_LOGIC_PATH = DATA_DIR / "stuttering_rules.md"
+GROUND_TRUTH_PATH = None
 
 # ChromaDB
 CHROMA_DB_PATH = DATA_DIR / "chroma_db"
-NOTES_COLLECTION_NAME = "celiac_notes"
-LABS_COLLECTION_NAME = "celiac_labs"
+NOTES_COLLECTION_NAME = "stuttering_notes"
+LABS_COLLECTION_NAME = ""
 
 # BioClinicalBERT (used by ChromaDB retriever)
-EMBED_MODEL_LOCAL = PROJECT_ROOT / "models" / "Bio_ClinicalBERT"
+EMBED_MODEL_LOCAL = Path("/home/biand/Projects/Celiac_BioVU/models/Bio_ClinicalBERT")
 EMBED_MODEL_HF = "emilyalsentzer/Bio_ClinicalBERT"
 EMBED_MODEL = str(EMBED_MODEL_LOCAL) if EMBED_MODEL_LOCAL.exists() else EMBED_MODEL_HF
 
 # Output
-AGENT_RESULTS_DIR = RESULTS_DIR / "celiac"
-AGENT_RESULTS_CSV = RESULTS_DIR / "celiac_results.csv"
+AGENT_RESULTS_DIR = RESULTS_DIR / "stuttering"
+AGENT_RESULTS_CSV = RESULTS_DIR / "stuttering_results.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -98,15 +102,16 @@ class Config:
     models: ModelConfig = field(default_factory=ModelConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
 
-    # Paths (set once, not per-instance)
+    phenotype: str = PHENOTYPE
+    use_labs: bool = USE_LABS
     project_root: Path = PROJECT_ROOT
     data_dir: Path = DATA_DIR
     results_dir: Path = RESULTS_DIR
     ehr_markdown_dir: Path = EHR_MARKDOWN_DIR
-    lab_csv_path: Path = LAB_CSV_PATH
+    lab_csv_path: Optional[Path] = LAB_CSV_PATH
     keywords_path: Path = KEYWORDS_PATH
     diagnosis_logic_path: Path = DIAGNOSIS_LOGIC_PATH
-    ground_truth_path: Path = GROUND_TRUTH_PATH
+    ground_truth_path: Optional[Path] = GROUND_TRUTH_PATH
     chroma_db_path: Path = CHROMA_DB_PATH
     notes_collection_name: str = NOTES_COLLECTION_NAME
     labs_collection_name: str = LABS_COLLECTION_NAME

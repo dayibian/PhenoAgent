@@ -1,28 +1,28 @@
 """
-pipeline.py — CLI entry point for the agentic celiac diagnosis system.
+pipeline.py — CLI entry point for the PhenoAgent stuttering phenotyping system.
 
 Usage examples:
-  # Diagnose a single patient
+  # Phenotype a single patient
   uv run python src/pheno_agent/pipeline.py --grids R201643869
 
-  # Diagnose patients from the manual review file
-  uv run python src/pheno_agent/pipeline.py \\
-    --grids-from-file "data/Celiac Diagnosis by Manual Review.xlsx" \\
+  # Phenotype patients from a file
+  uv run python src/pheno_agent/pipeline.py \
+    --grids-from-file "data/stuttering/patients.csv" \
     --sample 10
 
-  # Diagnose all patients in the EHR dataset
+  # Phenotype all patients in the dataset (from ChromaDB or EHR directory)
   uv run python src/pheno_agent/pipeline.py --all
 
-  # Evaluate against ground truth after diagnosis
-  uv run python src/pheno_agent/pipeline.py \\
-    --grids-from-file "data/Celiac Diagnosis by Manual Review.xlsx" \\
+  # Evaluate against ground truth after phenotyping
+  uv run python src/pheno_agent/pipeline.py \
+    --grids-from-file "data/stuttering/patients.csv" \
     --evaluate
 
   # Override models
-  uv run python src/pheno_agent/pipeline.py \\
-    --grids R201643869 \\
-    --reasoning-model qwen3.5:122b \\
-    --extraction-model gemma4:31b-it-q4_K_M
+  uv run python src/pheno_agent/pipeline.py \
+    --grids R201643869 \
+    --reasoning-model qwen3.8:27b \
+    --extraction-model qwen3.6:35b-a3b
 """
 
 import argparse
@@ -53,10 +53,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 LABEL_MAP = {
-    "positive": "Positive", "yes": "Positive", "1": "Positive",
-    "negative": "Negative", "no": "Negative", "0": "Negative",
-    "indeterminate": "Indeterminate", "uncertain": "Indeterminate",
-    "unknown": "Indeterminate", "pmh": "Indeterminate",
+    "positive": "Positive", "yes": "Positive", "1": "Positive", "case": "Positive",
+    "negative": "Negative", "no": "Negative", "0": "Negative", "control": "Negative",
+    "indeterminate": "Indeterminate", "uncertain": "Indeterminate", "unknown": "Indeterminate",
+    "excluded": "Excluded", "exclusion": "Excluded",
 }
 
 
@@ -76,11 +76,15 @@ def run_evaluation(results_csv: Path, ground_truth_path: Path):
     preds["grid"] = preds["grid"].astype(str).str.strip()
     preds["pred_label"] = preds["diagnosis"].str.strip().str.lower().map(LABEL_MAP).fillna("Indeterminate")
 
-    # Load ground truth
-    gt = pd.read_excel(ground_truth_path)
+    # Load ground truth (Excel or CSV)
+    if ground_truth_path.suffix in (".xlsx", ".xls"):
+        gt = pd.read_excel(ground_truth_path)
+    else:
+        gt = pd.read_csv(ground_truth_path)
+
     gt.columns = [c.strip() for c in gt.columns]
     id_col = next((c for c in gt.columns if "patient" in c.lower() or "grid" in c.lower() or "id" in c.lower()), gt.columns[0])
-    diag_col = next((c for c in gt.columns if "diagnosis" in c.lower()), gt.columns[1])
+    diag_col = next((c for c in gt.columns if "diagnosis" in c.lower() or "label" in c.lower() or "status" in c.lower() or "phenotype" in c.lower()), gt.columns[1])
     gt = gt[[id_col, diag_col]].copy()
     gt.columns = ["grid", "true_label"]
     gt["grid"] = gt["grid"].astype(str).str.strip()
@@ -95,18 +99,19 @@ def run_evaluation(results_csv: Path, ground_truth_path: Path):
         logger.error("No matching patients found.")
         return
 
-    labels = ["Positive", "Negative", "Indeterminate"]
-    report = classification_report(merged["true_label"], merged["pred_label"], labels=labels, zero_division=0)
+    labels = ["Positive", "Negative", "Indeterminate", "Excluded"]
+    present_labels = [l for l in labels if l in merged["true_label"].unique() or l in merged["pred_label"].unique()]
+    report = classification_report(merged["true_label"], merged["pred_label"], labels=present_labels, zero_division=0)
     logger.info("\nClassification Report:\n%s", report)
 
     # Confusion matrix
     fig_dir = cfg.results_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
-    cm = confusion_matrix(merged["true_label"], merged["pred_label"], labels=labels)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+    cm = confusion_matrix(merged["true_label"], merged["pred_label"], labels=present_labels)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=present_labels)
     fig, ax = plt.subplots(figsize=(8, 6))
     disp.plot(ax=ax, cmap="Blues", colorbar=False)
-    plt.title("Agentic Celiac Diagnosis: Manual vs. Predicted", fontsize=16)
+    plt.title("PhenoAgent Stuttering: Manual vs. Predicted", fontsize=16)
     plt.xlabel("Predicted", fontsize=13)
     plt.ylabel("Manual Review", fontsize=13)
     plt.tight_layout()
@@ -122,7 +127,7 @@ def run_evaluation(results_csv: Path, ground_truth_path: Path):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Agentic Celiac Disease Diagnosis System",
+        description="PhenoAgent: Speech Disfluency and Stuttering Phenotyping System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

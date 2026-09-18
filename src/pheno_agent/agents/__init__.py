@@ -1,1 +1,1 @@
-"""Agents sub-package for the agentic celiac diagnosis system."""
+"""Agents sub-package for the PhenoAgent clinical phenotyping system."""

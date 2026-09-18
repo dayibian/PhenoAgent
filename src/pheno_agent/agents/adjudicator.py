@@ -1,12 +1,13 @@
 """
-adjudicator.py — Clinical Adjudicator Agent.
+adjudicator.py — Clinical Adjudicator Agent for Stuttering.
 
 Applies the clinician's decision table deterministically, then uses an
 LLM to generate a human-readable reasoning chain citing the specific
 evidence, note IDs, and decision rules.
 
-The decision table is a pure Python implementation of Section 3 from
-``diagnosis_logic_from_clinician.md``.
+The decision table is a pure Python implementation of Section 3 and
+Section 4, Step 9 (Longitudinal Synthesis) from ``stuttering_rules.md``.
+Note: Lab values are not needed for this phenotype.
 """
 
 import logging
@@ -31,7 +32,7 @@ class NoteDecision:
     """Decision for a single note."""
     note_label: str
     note_date: str
-    decision: str  # Positive / Negative / Indeterminate
+    decision: str  # Positive / Negative / Indeterminate / Excluded
     rule: str      # Which rule triggered this decision
 
 
@@ -39,7 +40,7 @@ class NoteDecision:
 class FinalDiagnosis:
     """Complete diagnosis output for a patient."""
     grid: str
-    diagnosis: str = "Negative"  # Positive / Negative / Indeterminate
+    diagnosis: str = "Negative"  # Positive / Negative / Indeterminate / Excluded
     confidence: float = 0.0
     reasoning: str = ""
     evidence: List[str] = field(default_factory=list)
@@ -61,23 +62,22 @@ class FinalDiagnosis:
 
 
 # ---------------------------------------------------------------------------
-# Decision table (Section 3 of diagnosis_logic_from_clinician.md)
+# Decision table (Section 3 of stuttering_rules.md)
 # ---------------------------------------------------------------------------
 
 def apply_decision_table(signals: NoteSignals) -> NoteDecision:
     """
     Apply the clinician's decision table to a single note's signals.
 
-    Decision priority:
-      1. Past celiac diagnosis → Positive (celiac cannot be cured)
-      2. External biopsy confirmation → Positive
-      3. Marsh 3/4 → Positive
-      4. Marsh 1/2 → Indeterminate
-      5. IEL positive + Villous abnormal → Positive
-      6. IEL negative + Villous normal → Negative
-      7. IEL positive + Villous normal → Indeterminate
-      8. IEL negative + Villous abnormal → Indeterminate
-      9. No signal found → Negative
+    Decision priority (per Section 3 of stuttering_rules.md):
+      1. Non-speech context (gait, angina, priapism, stroke) → Excluded
+      2. Family history only (no patient symptoms) → Excluded
+      3. Competing psychiatric conditions (psychosis, clanging) → Excluded
+      4. Explicit negation or formal rule-out → Negative
+      5. Affirmative + SLP or formal assessment (SSI, OASES) → Positive
+      6. Affirmative + Speech context (developmental / pediatric) → Positive
+      7. Ambiguous context or query without confirmation → Indeterminate
+      8. No signals found → Negative
 
     Parameters
     ----------
@@ -89,83 +89,91 @@ def apply_decision_table(signals: NoteSignals) -> NoteDecision:
     NoteDecision
         The decision and which rule triggered it.
     """
-    iel = signals.iel_status
-    villous = signals.villous_architecture
-    marsh = signals.marsh_grade
-    external = signals.external_confirmation
-    past_dx = signals.past_celiac_diagnosis
+    # 1. Non-speech medical jargon exclusion
+    if signals.speech_context == "non_speech":
+        return NoteDecision(
+            note_label=signals.note_label,
+            note_date=signals.note_date,
+            decision="Excluded",
+            rule="Non-speech medical jargon (gait, angina, priapism, stroke)",
+        )
 
-    if past_dx:
+    # 2. Family history only
+    if signals.subject_attribution == "family_only":
         return NoteDecision(
             note_label=signals.note_label,
             note_date=signals.note_date,
-            decision="Positive",
-            rule="Past celiac diagnosis (celiac cannot be cured)",
+            decision="Excluded",
+            rule="Family history only without patient symptoms",
         )
-    if external:
+
+    # 3. Competing psychiatric presentation (psychosis / clanging)
+    if signals.competing_condition:
         return NoteDecision(
             note_label=signals.note_label,
             note_date=signals.note_date,
-            decision="Positive",
-            rule="External biopsy confirmed",
+            decision="Excluded",
+            rule="Speech irregularity attributed solely to psychosis/clanging",
         )
-    if marsh == "positive":
-        return NoteDecision(
-            note_label=signals.note_label,
-            note_date=signals.note_date,
-            decision="Positive",
-            rule="Marsh grade 3/4 (positive)",
-        )
-    if marsh == "indeterminate":
-        return NoteDecision(
-            note_label=signals.note_label,
-            note_date=signals.note_date,
-            decision="Indeterminate",
-            rule="Marsh grade 1/2 (indeterminate)",
-        )
-    if iel == "positive" and villous == "abnormal":
-        return NoteDecision(
-            note_label=signals.note_label,
-            note_date=signals.note_date,
-            decision="Positive",
-            rule="IEL positive + Villous abnormal",
-        )
-    if iel == "negative" and villous == "normal":
+
+    # 4. Explicit negation or rule-out
+    if signals.assertion in ("negated", "ruled_out"):
         return NoteDecision(
             note_label=signals.note_label,
             note_date=signals.note_date,
             decision="Negative",
-            rule="IEL negative + Villous normal",
+            rule="Explicit negation or formal rule-out of stuttering",
         )
-    if iel == "positive" and villous == "normal":
+
+    # 5 & 6. Affirmative speech documentation
+    if signals.assertion == "affirmative" and (signals.slp_or_formal_assessment or signals.speech_context == "speech"):
+        if signals.slp_or_formal_assessment:
+            return NoteDecision(
+                note_label=signals.note_label,
+                note_date=signals.note_date,
+                decision="Positive",
+                rule="Confirmed clinical diagnosis / SLP assessment / standardized test (SSI/OASES)",
+            )
+        return NoteDecision(
+            note_label=signals.note_label,
+            note_date=signals.note_date,
+            decision="Positive",
+            rule="Affirmative clinical / developmental speech disfluency documentation",
+        )
+
+    # 7. Ambiguous or query only
+    if signals.assertion == "ambiguous" or (signals.stuttering_mentioned and signals.speech_context == "not_found"):
         return NoteDecision(
             note_label=signals.note_label,
             note_date=signals.note_date,
             decision="Indeterminate",
-            rule="IEL positive + Villous normal",
+            rule="Ambiguous context or query without clinical confirmation",
         )
-    if iel == "negative" and villous == "abnormal":
-        return NoteDecision(
-            note_label=signals.note_label,
-            note_date=signals.note_date,
-            decision="Indeterminate",
-            rule="IEL negative + Villous abnormal",
-        )
-    # No signal found
+
+    # 8. No signal found
     return NoteDecision(
         note_label=signals.note_label,
         note_date=signals.note_date,
         decision="Negative",
-        rule="No pathological signal found",
+        rule="No speech disfluency or stuttering documented",
     )
 
 
 def aggregate_decisions(decisions: List[str]) -> str:
-    """Aggregate note-level decisions: Positive > Indeterminate > Negative."""
+    """
+    Aggregate note-level decisions across longitudinal history.
+    Section 4, Step 9: Developmental stuttering onset is early childhood (ages 2–6).
+    A single confirmed pediatric / SLP diagnosis establishes Positive.
+    Later notes stating 'speech fluent' do not negate prior confirmed diagnosis.
+
+    Priority: Positive > Indeterminate > Excluded > Negative
+    """
     if "Positive" in decisions:
         return "Positive"
     if "Indeterminate" in decisions:
         return "Indeterminate"
+    if "Excluded" in decisions:
+        return "Excluded"
     return "Negative"
 
 
@@ -182,7 +190,10 @@ def _load_diagnosis_logic(path: Optional[Path] = None) -> str:
         return _diagnosis_logic
     if path is None:
         path = cfg.diagnosis_logic_path
-    with open(path, "r") as f:
+    if not path.exists():
+        logger.warning("Diagnosis rules file %s not found. Using empty text.", path)
+        return ""
+    with open(path, "r", encoding="utf-8") as f:
         _diagnosis_logic = f.read()
     return _diagnosis_logic
 
@@ -193,7 +204,7 @@ def _load_diagnosis_logic(path: Optional[Path] = None) -> str:
 
 class Adjudicator:
     """
-    Clinical Adjudicator agent.
+    Clinical Adjudicator agent for stuttering.
 
     Applies the clinician's decision table deterministically, then
     generates a human-readable reasoning chain using the LLM.
@@ -220,7 +231,7 @@ class Adjudicator:
         verified_signals : list[NoteSignals]
             Critic-verified signals.
         lab_summary : LabSummary, optional
-            TTG-IgA lab data.
+            Lab summary (not needed for stuttering, ignored).
         keyword_decision : str
             Aggregated keyword pre-screen decision.
 
@@ -230,23 +241,16 @@ class Adjudicator:
             Complete diagnosis with reasoning chain.
         """
         result = FinalDiagnosis(grid=grid)
-        lab_decision = lab_summary.lab_decision if lab_summary else "excluded"
-        result.lab_decision = lab_decision
+        result.lab_decision = "not_applicable"
 
-        # Step 1: TTG override
-        if lab_decision == "case":
+        # Step 1: Lab Override Check (only if phenotype explicitly uses labs)
+        if cfg.use_labs and lab_summary and lab_summary.lab_decision == "case":
             result.diagnosis = "Positive"
             result.confidence = 1.0
-            result.decision_path = "TTG-IgA lab override (TTG > cutoff)"
-            result.reasoning = (
-                f"TTG-IgA lab decision is 'case' (TTG > cutoff). "
-                f"Per clinician's rules: 'If TTG > 100 or > 10x upper limit of normal, "
-                f"then positive regardless of other labs or notes.' "
-                f"Auto-assigned Positive."
-            )
-            if lab_summary:
-                result.evidence = [lab_summary.summary_text]
-            logger.info("[Adjudicator] %s → Positive (TTG override)", grid)
+            result.decision_path = "Serological lab override"
+            result.reasoning = "Serological lab decision indicates confirmed case."
+            result.evidence = [lab_summary.summary_text]
+            logger.info("[Adjudicator] %s → Positive (Lab override)", grid)
             return result
 
         # Step 2: Apply decision table per note
@@ -259,11 +263,10 @@ class Adjudicator:
 
         result.note_decisions = note_decisions
 
-        # Step 3: Aggregate across notes
+        # Step 3: Aggregate across notes (Longitudinal Synthesis)
         note_dx = [nd.decision for nd in note_decisions]
         llm_agg = aggregate_decisions(note_dx)
 
-        # Use LLM decision as final. Do NOT let keyword scanning override the LLM's deep reading.
         final = llm_agg
         result.diagnosis = final
         result.evidence = all_quotes[:10]
@@ -272,7 +275,11 @@ class Adjudicator:
         if llm_agg == keyword_decision:
             result.confidence = 0.95
         elif final == "Positive":
+            result.confidence = 0.90
+        elif final == "Excluded":
             result.confidence = 0.85
+        elif final == "Negative":
+            result.confidence = 0.80
         else:
             result.confidence = 0.65
 
@@ -282,14 +289,14 @@ class Adjudicator:
             for nd in note_decisions
         ]
         result.decision_path = (
-            f"Per-note: {'; '.join(note_path_parts)}. "
+            f"Per-note: {'; '.join(note_path_parts) if note_path_parts else 'None'}. "
             f"LLM aggregated: {llm_agg}. Keyword: {keyword_decision}. "
             f"Final: {final}."
         )
 
         # Step 4: Generate reasoning chain (LLM)
         logger.info("[Adjudicator] Generating reasoning for %s …", grid)
-        result.reasoning = self._generate_reasoning(result, lab_summary)
+        result.reasoning = self._generate_reasoning(result)
 
         logger.info("[Adjudicator] %s → %s (confidence=%.2f)", grid, final, result.confidence)
         return result
@@ -297,12 +304,10 @@ class Adjudicator:
     def _generate_reasoning(
         self,
         result: FinalDiagnosis,
-        lab_summary: Optional[LabSummary],
     ) -> str:
         """Use LLM to generate a human-readable reasoning chain."""
         diagnosis_logic = _load_diagnosis_logic()
 
-        lab_text = lab_summary.summary_text if lab_summary else "No lab data."
         evidence_text = "\n".join(f"- {q}" for q in result.evidence) or "No supporting quotes."
         decisions_text = "\n".join(
             f"- {nd.note_label} ({nd.note_date}): {nd.decision} — Rule: {nd.rule}"
@@ -310,13 +315,10 @@ class Adjudicator:
         ) or "No per-note decisions."
 
         prompt = f"""Based on the following clinical analysis, write a clear, concise reasoning
-chain explaining why this patient received a **{result.diagnosis}** celiac disease diagnosis.
+chain explaining why this patient received a **{result.diagnosis}** stuttering phenotype.
 
-## Clinician's Decision Rules
+## Clinical Phenotyping Rules
 {diagnosis_logic}
-
-## Lab Data
-{lab_text}
 
 ## Per-Note Decisions (from decision table)
 {decisions_text}
@@ -328,16 +330,18 @@ chain explaining why this patient received a **{result.diagnosis}** celiac disea
 {result.decision_path}
 
 ## Instructions
-- Write 3–5 sentences explaining the diagnosis step by step.
-- Reference specific evidence (note dates, quotes, lab values).
-- Reference which decision rule was triggered.
-- If the diagnosis is Negative, explain what was absent.
+- Write 2–4 sentences explaining the phenotype decision step by step.
+- Reference specific evidence (note dates, quotes, speech therapy/SLP mentions, family history, or negation).
+- Reference which decision rule and longitudinal synthesis rule was triggered.
+- If the diagnosis is Excluded, explain whether it was due to non-speech jargon (gait/angina/priapism/stroke), family history only, or competing psychiatric conditions.
+- If the diagnosis is Negative, explain what was absent or explicitly negated.
 - Be factual and concise. Do not speculate beyond the evidence."""
 
         system_prompt = (
-            "You are a clinical reasoning assistant. Write a clear, evidence-based "
-            "reasoning chain for a celiac disease diagnosis decision."
+            "You are a clinical reasoning assistant for developmental stuttering and speech disfluency. "
+            "Write a clear, evidence-based reasoning chain for the phenotyping decision."
         )
 
         raw = self.llm.get_completion(system_prompt, prompt, model=self.model)
         return raw.strip() if raw else result.decision_path
+

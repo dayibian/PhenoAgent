@@ -36,14 +36,14 @@ class ChunkResult:
 
 
 # ---------------------------------------------------------------------------
-# Multi-query strategy
+# Multi-query strategy for Stuttering Phenotype
 # ---------------------------------------------------------------------------
 
 RETRIEVAL_QUERIES = [
-    "celiac disease diagnosis biopsy intraepithelial lymphocytes villous atrophy Marsh score duodenal pathology",
-    "celiac sprue EGD endoscopy scalloping flat mucosa gluten enteropathy",
-    "villous blunting crypt hyperplasia lamina propria lymphocytosis IEL",
-    "biopsy-proven celiac confirmed celiac diagnosis duodenal biopsy",
+    "stuttering stammering developmental speech disfluency childhood speech diagnosis",
+    "speech-language pathologist SLP fluency evaluation speech therapy assessment",
+    "stuttering severity instrument SSI SSI-3 SSI-4 OASES percent syllables stuttered",
+    "part-word repetitions sound prolongations articulatory speech blocks struggle behaviors",
 ]
 
 
@@ -183,3 +183,54 @@ def retrieve_relevant_chunks(
 
     logger.debug("Multi-query retrieval for %s: %d unique chunks.", grid, len(chunks))
     return chunks[:top_k]
+
+
+def get_available_grids_from_chroma(
+    db_path: Optional[Path] = None,
+    collection_name: Optional[str] = None,
+) -> List[str]:
+    """Return sorted unique patient grid IDs stored in the ChromaDB collection."""
+    db_path = db_path or cfg.chroma_db_path
+    collection_name = collection_name or cfg.notes_collection_name
+
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=str(db_path))
+        collection = client.get_collection(name=collection_name)
+        data = collection.get(include=["metadatas"])
+        metadatas = data.get("metadatas", [])
+        grids = {m.get("grid") for m in metadatas if m and m.get("grid")}
+        return sorted(list(grids))
+    except Exception as e:
+        logger.debug("Could not retrieve grids from ChromaDB: %s", e)
+        return []
+
+
+def get_all_patient_chunks_from_chroma(
+    grid: str,
+    db_path: Optional[Path] = None,
+    collection_name: Optional[str] = None,
+) -> List[ChunkResult]:
+    """Retrieve all stored chunks for a patient grid directly from ChromaDB."""
+    db_path = db_path or cfg.chroma_db_path
+    collection_name = collection_name or cfg.notes_collection_name
+
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=str(db_path))
+        collection = client.get_collection(name=collection_name)
+        data = collection.get(where={"grid": grid}, include=["documents", "metadatas"])
+        docs = data.get("documents", [])
+        metadatas = data.get("metadatas", [])
+        results = []
+        for doc, meta in zip(docs, metadatas):
+            results.append(ChunkResult(
+                text=doc,
+                note_id=meta.get("note_id", "unknown"),
+                note_datetime=meta.get("note_datetime", ""),
+                note_type=meta.get("note_type", ""),
+            ))
+        return results
+    except Exception as e:
+        logger.debug("Could not get patient chunks from ChromaDB for grid %s: %s", grid, e)
+        return []
