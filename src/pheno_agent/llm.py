@@ -60,11 +60,20 @@ def parse_json_response(raw: str) -> Optional[Dict[str, Any]]:
     except (json.JSONDecodeError, ValueError):
         logger.warning("JSON parse failed. Attempting line-by-line repair…")
 
-    # Last-resort: try to fix common issues (trailing commas, single quotes)
+    # Last-resort: try to fix common issues (trailing commas, single quotes, unclosed braces)
     try:
         repaired = re.sub(r",\s*}", "}", json_str)
         repaired = re.sub(r",\s*]", "]", repaired)
         return json.loads(repaired)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    try:
+        # Try closing open brackets if truncated
+        open_brackets = json_str.count("[") - json_str.count("]")
+        open_braces = json_str.count("{") - json_str.count("}")
+        repaired_trunc = json_str + ("]" * max(0, open_brackets)) + ("}" * max(0, open_braces))
+        return json.loads(repaired_trunc)
     except (json.JSONDecodeError, ValueError):
         logger.error("Could not parse JSON from model response.")
         return None
@@ -251,6 +260,9 @@ class OllamaHandler:
                 raw_json = generator(chat_prompt, options=options)
                 elapsed = time.time() - t0
 
+                if not raw_json or not raw_json.strip():
+                    raise ValueError("Outlines generator returned empty response")
+
                 parsed = response_schema.model_validate_json(raw_json)
 
                 self.total_calls += 1
@@ -263,6 +275,17 @@ class OllamaHandler:
 
             except Exception as exc:
                 last_error = exc
+                err_str = str(exc).lower()
+
+                # Fast-fail on empty response or EOF parsing error:
+                # Retrying with the same Outlines grammar constraint will repeatedly fail/hang.
+                if "empty response" in err_str or "eof while parsing" in err_str or "empty model output" in err_str:
+                    logger.warning(
+                        "Outlines call failed on attempt %d with empty output/EOF (%s). Fast-failing directly to fallback without retries.",
+                        attempt, exc,
+                    )
+                    raise last_error
+
                 wait = 2 ** attempt
                 logger.warning(
                     "Outlines call failed (attempt %d/%d): %s — retrying in %ds",

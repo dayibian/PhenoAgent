@@ -11,6 +11,7 @@ This agent is mostly deterministic — no LLM calls.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -156,8 +157,9 @@ class DataGatherer:
 
         Priority:
         1. Notes with keyword hits (primary, SLP, formal assessment, confirmatory context)
-        2. Notes containing any stuttering-related keywords
-        3. If nothing found, include all notes
+        2. Notes containing specific stuttering or speech-disorder phrases
+        3. Routine notes containing only negative normal speech exam templates are excluded
+        4. If no signals found and record is large, sample representative notes
         """
         if not dossier.parsed_ehr or not dossier.keyword_report:
             return []
@@ -180,22 +182,59 @@ class DataGatherer:
             else:
                 non_signalled.append(note)
 
+        # Compound clinical keywords (replacing generic "speech")
+        stuttering_keywords = [
+            "stutter", "stammer", "studder", "disfluen", "dysfluen",
+            "ssi", "oases", "slp", "fluency",
+            "speech therapy", "speech/language", "speech language",
+            "speech eval", "speech pathol", "speech delay", "speech disorder",
+            "speech consult", "speech tx", "speech clinic", "childhood onset fluency",
+        ]
+
+        # Routine normal speech exam patterns to exclude if there are no disfluency keywords
+        normal_speech_pattern = re.compile(
+            r"speech\s*:\s*(clear|normal|grossly normal|grossly intact|age-appropriate|fluent and clear|intact)",
+            re.IGNORECASE,
+        )
+
+        def is_relevant_non_signalled(n: NoteEntry) -> bool:
+            text_lower = n.text.lower()
+            if not any(kw in text_lower for kw in stuttering_keywords):
+                return False
+            # If the only match was "speech" in a routine normal exam template without any stuttering terms
+            if not any(kw in text_lower for kw in ["stutter", "stammer", "studder", "disfluen", "dysfluen", "ssi", "oases", "slp", "fluency"]):
+                if normal_speech_pattern.search(n.text) and not any(term in text_lower for term in ["therapy", "eval", "pathol", "delay", "disorder"]):
+                    return False
+            return True
+
         if signalled:
-            stuttering_keywords = [
-                "stutter", "stammer", "studder", "disfluen", "dysfluen",
-                "ssi", "oases", "slp", "speech", "fluency",
-            ]
-            extra = [
-                n for n in non_signalled
-                if any(kw in n.text.lower() for kw in stuttering_keywords)
-            ]
+            extra = [n for n in non_signalled if is_relevant_non_signalled(n)]
             selected = signalled + extra
-            logger.debug(
+            logger.info(
                 "Selected %d signalled + %d stuttering-mentioned notes (of %d total).",
                 len(signalled), len(extra), len(notes),
             )
+            for idx, note in enumerate(selected):
+                note.label = f"Note_{idx + 1}"
             return selected
 
-        # No keyword signals at all — send all notes
-        logger.debug("No keyword signals found. Including all %d notes.", len(notes))
-        return list(notes)
+        # No primary keyword signals — check if any notes match clinical phrases
+        matched_notes = [n for n in notes if is_relevant_non_signalled(n)]
+        if matched_notes:
+            logger.info("No primary keyword signals, but found %d clinically relevant notes (of %d total).", len(matched_notes), len(notes))
+            for idx, note in enumerate(matched_notes):
+                note.label = f"Note_{idx + 1}"
+            return matched_notes
+
+        # Truly zero disfluency signals across the entire record
+        if len(notes) <= 30:
+            logger.info("No keyword signals found. Including all %d notes (small record).", len(notes))
+            selected = list(notes)
+        else:
+            logger.info("No keyword signals found in large record (%d notes). Sampling 30 representative notes.", len(notes))
+            mid = len(notes) // 2
+            selected = list(notes[:10]) + list(notes[mid-5:mid+5]) + list(notes[-10:])
+
+        for idx, note in enumerate(selected):
+            note.label = f"Note_{idx + 1}"
+        return selected

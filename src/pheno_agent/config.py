@@ -79,6 +79,8 @@ class AgentConfig:
 
     # Notes batching for Signal Extractor (notes per LLM call)
     extraction_batch_size: int = 5
+    extraction_max_chars_per_batch: int = 15000  # Dynamic batching character budget
+    extraction_concurrency: int = 3  # Parallel batch calls via ThreadPoolExecutor
 
     # Ollama connection
     use_remote_ollama: bool = True  # Set to True to use the remote GPU via SSH tunnel
@@ -89,7 +91,8 @@ class AgentConfig:
     def ollama_host(self) -> str:
         return self.ollama_host_remote if self.use_remote_ollama else self.ollama_host_local
 
-    ollama_timeout: int = 600  # seconds — large models can be slow
+    ollama_timeout: int = 300  # seconds — reasoning / general timeout
+    extraction_timeout: int = 120  # seconds — per-batch extraction timeout
 
 
 # ---------------------------------------------------------------------------

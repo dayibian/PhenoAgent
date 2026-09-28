@@ -10,6 +10,7 @@ Supports a **reflection mode**: when the Critic returns feedback, the
 Extractor re-processes only the flagged notes with the feedback included.
 """
 
+import concurrent.futures
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -231,23 +232,45 @@ class SignalExtractor:
         if not notes:
             return []
 
-        # Prepare note dicts for the prompt
+        # Prepare note dicts for the prompt (preserving any pre-existing note label)
         note_dicts = []
         for i, note in enumerate(notes):
             note_dicts.append({
-                "label": f"Note_{i + 1}",
+                "label": getattr(note, "label", None) or f"Note_{i + 1}",
                 "date": getattr(note, "date", "unknown"),
                 "source": getattr(note, "source", "unknown"),
                 "text": getattr(note, "text", str(note)),
             })
 
-        # Process in batches
+        # Dynamic batching: group by count AND character length
         batch_size = cfg.agent.extraction_batch_size
-        all_signals: List[NoteSignals] = []
+        max_chars = getattr(cfg.agent, "extraction_max_chars_per_batch", 15000)
+        batches = []
+        current_batch = []
+        current_chars = 0
 
-        for batch_start in range(0, len(note_dicts), batch_size):
-            batch = note_dicts[batch_start:batch_start + batch_size]
+        for nd in note_dicts:
+            n_chars = len(nd.get("text", ""))
+            # If current batch is full or adding this note exceeds char budget, start a new batch
+            if current_batch and (len(current_batch) >= batch_size or (current_chars + n_chars > max_chars)):
+                batches.append(current_batch)
+                current_batch = []
+                current_chars = 0
 
+            current_batch.append(nd)
+            current_chars += n_chars
+
+        if current_batch:
+            batches.append(current_batch)
+
+        system_prompt = (
+            "You are a clinical data extraction assistant. "
+            "Extract structured speech disfluency and stuttering signals from medical notes. "
+            "Respond only in valid JSON format."
+        )
+
+        def _process_single_batch(args):
+            b_idx, batch = args
             # Filter critic feedback to only this batch's notes
             batch_labels = {n["label"] for n in batch}
             batch_feedback = None
@@ -262,32 +285,28 @@ class SignalExtractor:
                 batch, keyword_hints=keyword_hints, critic_feedback=batch_feedback,
             )
 
-            system_prompt = (
-                "You are a clinical data extraction assistant. "
-                "Extract structured speech disfluency and stuttering signals from medical notes. "
-                "Respond only in valid JSON format."
-            )
-
             logger.info(
-                "[SignalExtractor] Processing notes %d–%d of %d …",
-                batch_start + 1, batch_start + len(batch), len(note_dicts),
+                "[SignalExtractor] Processing batch %d/%d (%d notes: %s) …",
+                b_idx + 1, len(batches), len(batch), [n["label"] for n in batch],
             )
 
             try:
                 parsed_response = self.llm.get_structured(
                     system_prompt, prompt, NoteSignalsResponseSchema, model=self.model,
                 )
-                signals = self._process_extracted_signals(parsed_response, batch)
+                return self._process_extracted_signals(parsed_response, batch)
             except Exception as e:
                 logger.warning("[SignalExtractor] Structured extraction failed (%s). Attempting raw JSON fallback...", e)
-                raw_response = self.llm.generate(system_prompt, prompt, model=self.model)
+                raw_response = self.llm.get_completion(
+                    system_prompt, prompt, model=self.model, expect_json=True,
+                )
                 parsed_dict = parse_json_response(raw_response)
                 notes_data = parsed_dict.get("notes", []) if isinstance(parsed_dict, dict) else []
                 signals = []
                 for i, nd in enumerate(notes_data):
                     matching_dict = batch[i] if i < len(batch) else {}
                     signals.append(NoteSignals(
-                        note_label=nd.get("note_label", f"Note_{i+1}"),
+                        note_label=nd.get("note_label", matching_dict.get("label", f"Note_{i+1}")),
                         note_date=matching_dict.get("date", ""),
                         note_type=matching_dict.get("source", ""),
                         stuttering_mentioned=bool(nd.get("stuttering_mentioned", False)),
@@ -298,8 +317,20 @@ class SignalExtractor:
                         competing_condition=bool(nd.get("competing_condition", False)),
                         supporting_quotes=nd.get("supporting_quotes", []),
                     ))
+                return signals
 
-            all_signals.extend(signals)
+        indexed_batches = list(enumerate(batches))
+        concurrency = getattr(cfg.agent, "extraction_concurrency", 1)
+
+        all_signals: List[NoteSignals] = []
+        if concurrency > 1 and len(batches) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(concurrency, len(batches))) as executor:
+                batch_results = list(executor.map(_process_single_batch, indexed_batches))
+        else:
+            batch_results = [_process_single_batch(b) for b in indexed_batches]
+
+        for b_sigs in batch_results:
+            all_signals.extend(b_sigs)
 
         return all_signals
 

@@ -183,22 +183,48 @@ class Orchestrator:
                 signals = verification.verified_signals
                 break
 
-            # Re-extract with critic feedback
+            # Targeted Delta Re-extraction with critic feedback
+            flawed_labels = getattr(verification, "flawed_note_labels", [])
+            flawed_set = set(flawed_labels) if flawed_labels else {i.note_label for i in verification.issues}
+
+            notes_to_re_extract = [
+                n for idx, n in enumerate(dossier.relevant_notes)
+                if (getattr(n, "label", f"Note_{idx+1}") in flawed_set)
+            ]
+
+            if not notes_to_re_extract:
+                notes_to_re_extract = dossier.relevant_notes
+
             logger.info(
-                "PATIENT %s — Re-extraction requested (%d issues)",
-                grid, len(verification.issues),
+                "PATIENT %s — Targeted re-extraction for %d/%d notes (labels: %s)",
+                grid, len(notes_to_re_extract), len(dossier.relevant_notes),
+                sorted(list(flawed_set)),
             )
-            signals = self.signal_extractor.extract(
-                notes=dossier.relevant_notes,
+
+            delta_signals = self.signal_extractor.extract(
+                notes=notes_to_re_extract,
                 keyword_hints=keyword_hints,
                 critic_feedback=verification.issues,
             )
+
+            # Splice delta signals back into full signals list preserving order
+            sig_map = {s.note_label: s for s in signals}
+            for ds in delta_signals:
+                sig_map[ds.note_label] = ds
+
+            signals = [
+                sig_map.get(getattr(n, "label", f"Note_{idx+1}"), s)
+                for idx, (n, s) in enumerate(zip(dossier.relevant_notes, signals))
+            ]
+
             trace["steps"].append({
                 "agent": "SignalExtractor",
-                "mode": "re-extraction",
+                "mode": "delta_re_extraction",
                 "round": reflection + 1,
-                "signals": [self._signal_to_dict(s) for s in signals],
+                "re_extracted_count": len(notes_to_re_extract),
+                "signals": [self._signal_to_dict(s) for s in delta_signals],
             })
+
 
         # ---- Step 5: Adjudicator ------------------------------------------
         logger.info("PATIENT %s — Step 5: Adjudication", grid)

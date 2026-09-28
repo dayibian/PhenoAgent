@@ -55,6 +55,7 @@ class VerificationResult:
     verified_signals: List[NoteSignals] = field(default_factory=list)
     issues: List[CriticFeedback] = field(default_factory=list)
     needs_re_extraction: bool = False
+    flawed_note_labels: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +346,16 @@ class Critic:
         if quote_issues:
             logger.info("[Critic] Found %d phantom quotes.", len(quote_issues))
 
+        # Filter out phantom quotes from signals; identify notes with ZERO valid supporting quotes
+        unresolved_notes = set()
+        for sig, text in zip(signals, note_texts):
+            if sig.supporting_quotes:
+                valid_quotes = [q for q in sig.supporting_quotes if _fuzzy_contains(text, q)]
+                if sig.stuttering_mentioned and sig.assertion == "affirmative" and not valid_quotes:
+                    # Note claimed affirmative stuttering but has no real quotes in the note
+                    unresolved_notes.add(sig.note_label)
+                sig.supporting_quotes = valid_quotes
+
         # Stage 2: Signal consistency (LLM-based, only if needed)
         needs_llm_check = False
         mismatches = []
@@ -381,28 +392,44 @@ class Critic:
                     "Verify speech disfluency signal extractions according to clinical rules. "
                     "Respond only in valid JSON."
                 )
-                parsed_response = self.llm.get_structured(
-                    system_prompt, prompt, VerificationResponseSchema, model=self.model,
-                )
-                self._apply_corrections(signals, parsed_response.verifications, all_issues)
+                try:
+                    parsed_response = self.llm.get_structured(
+                        system_prompt, prompt, VerificationResponseSchema, model=self.model,
+                    )
+                    self._apply_corrections(signals, parsed_response.verifications, all_issues)
+                except Exception as e:
+                    logger.warning("[Critic] Structured verification failed (%s). Attempting raw completion fallback...", e)
+                    try:
+                        raw_resp = self.llm.get_completion(system_prompt, prompt, model=self.model, expect_json=True)
+                        parsed_dict = parse_json_response(raw_resp)
+                        verifs = parsed_dict.get("verifications", []) if isinstance(parsed_dict, dict) else []
+                        valid_corrections = []
+                        valid_fields = {"speech_context", "subject_attribution", "assertion", "slp_or_formal_assessment", "competing_condition"}
+                        for v in verifs:
+                            if isinstance(v, dict) and "note_label" in v and v.get("field") in valid_fields:
+                                valid_corrections.append(VerificationSchema(
+                                    note_label=str(v.get("note_label", "")),
+                                    field=v.get("field"),
+                                    correct_value=str(v.get("correct_value", "")),
+                                    reasoning=str(v.get("reasoning", "")),
+                                ))
+                        self._apply_corrections(signals, valid_corrections, all_issues)
+                    except Exception as fallback_e:
+                        logger.warning("[Critic] Fallback verification also failed (%s). Proceeding with uncorrected signals.", fallback_e)
+                        # Fallback failed: these mismatches remain unresolved
+                        for mm in mismatches:
+                            unresolved_notes.add(mm["note_label"])
 
-        # Determine if re-extraction is needed
-        significant_issues = [
-            iss for iss in all_issues
-            if iss.issue_type in (
-                "signal_mismatch",
-                "negation_error",
-                "attribution_error",
-                "non_speech_mismatch",
-            )
-        ]
-        result.needs_re_extraction = len(significant_issues) > 0
+        # Determine if re-extraction is needed:
+        # Only true if there are notes with zero valid quotes or unhandled verification failures
+        result.flawed_note_labels = sorted(list(unresolved_notes))
+        result.needs_re_extraction = len(result.flawed_note_labels) > 0
         result.verified_signals = signals
         result.issues = all_issues
 
         logger.info(
-            "[Critic] Verification complete: %d issues, re-extraction=%s",
-            len(all_issues), result.needs_re_extraction,
+            "[Critic] Verification complete: %d issues, re-extraction=%s (flawed notes: %s)",
+            len(all_issues), result.needs_re_extraction, result.flawed_note_labels or "none",
         )
         return result
 
